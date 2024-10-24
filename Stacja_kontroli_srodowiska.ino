@@ -11,47 +11,33 @@ LiquidCrystal_I2C lcd(0x27, 16, 2); // I2C address 0x27, 16 column and 2 rows
 #define SOIL_ANALOG_VALUE_SENSOR_PIN A2
 #define BUZZER_PIN 5  // PWM
 #define WATER_PUMP_PIN 6
-#define CO2_SENSOR_PIN 8  // Interrupts,  PCINT0
-#define SOIL_SENSOR_PIN 3               //INT1
-#define BUTTON_PIN 2                    //INT0
-//!!!!!!!!!!!!!!!!!!! PWM - 3, 5, 6, 9, 10, 11 
+#define SOIL_SENSOR_PIN 8
+#define CO2_SENSOR_PIN 2                 //INT0
+#define BUTTON_PIN 3                    //INT1
 
-//#define DEBOUNCER 10  ??????
+//DEBOUNCER
 volatile unsigned long lastDebounceTime = 0;
 const unsigned long debounceDelay = 50;
-/*
-  PB0-PB7 pins used for PCINT (PCINT0-PCINT7)
-  it's better not to use D8 to D13 since those
-  pins are configured for pin change interrupts
-*/
 
 // Global vaiables
 volatile bool buttonState = HIGH;
 volatile bool co2Alarm = HIGH;
-volatile bool watering = HIGH;
-bool prevButtonState;
-bool waterState = 0;
-bool co2State;
-//volatile bool previousButtonState = LOW;
-//volatile bool refresh = HIGH;
-//bool refreshed = HIGH;
-//unsigned int reload = 0xF424;
+volatile bool waterState;// = HIGH; // HIGH = plant has enough water
 
-/*
-ISR(TIMER1_COMPA_vect){
-  refresh = !refresh;
-}
-*/
+bool prevButtonState;
+int pevTempVal = 0;
+int prevCo2Val = 0;
+
+DHT dht11(TEMP_SENSOR_PIN, DHT11);
 
 void setup()
 {
   // Pins setup
-  DHT dht11(TEMP_SENSOR_PIN, DHT11);  // Inputs
-  pinMode(CO2_ANALOG_VALUE_PIN, INPUT);
+  pinMode(CO2_ANALOG_VALUE_PIN, INPUT); // Inputs
   pinMode(SOIL_ANALOG_VALUE_SENSOR_PIN, INPUT);
   pinMode(CO2_SENSOR_PIN, INPUT_PULLUP); // INT0
   pinMode(SOIL_SENSOR_PIN, INPUT_PULLUP);  // INT1
-  pinMode(BUTTON_PIN, INPUT_PULLUP); // PCINT0
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
   pinMode(WATER_PUMP_PIN, OUTPUT);  // Outputs
   pinMode(BUZZER_PIN, OUTPUT);
   
@@ -63,87 +49,31 @@ void setup()
 
   // Interrupts
   attachInterrupt(digitalPinToInterrupt(BUTTON_PIN), buttonISR, RISING);
-  attachInterrupt(digitalPinToInterrupt(SOIL_SENSOR_PIN), soilISR, CHANGE);
-
-  PCICR |= (1<<PCIE0);  // Enabling PCINT0, change on any enabled PCINT7-0 pin will cause an interrupt
-  PCMSK0 |= (1<<PCINT0); // register that controls which pins contribute to the pin change interrupts - only PCINT0 - D8. Enabling individual pin
-  sei();
+  attachInterrupt(digitalPinToInterrupt(CO2_SENSOR_PIN), co2ISR, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(CO2_SENSOR_PIN), co2ISR, CHANGE);
 }
   
-//Timer Interrupt
-/*
-cli();
-TCCR1A = 0;
-TCCR1B = 0; 
-OCR1A = reload;
-TCCR1B = (1<<WGM12) | (1<<CS12) | (1 << CS10); 
-TIMSK1 = (1<<OCIE1A); 
-sei(); 
-*/
-////////////////////
-//bool alarm = 0;
 void loop(){
-  if(co2Alarm != waterState){
   if(co2Alarm){ // Check if buzzer ande red diode should be turned on
       analogWrite(BUZZER_PIN, 0);
   } else {
       analogWrite(BUZZER_PIN, 191); // After interrupt turning on buzzer and red diode
   }
-  //waterState = co2Alarm;
-  }
 
-  if(watering){ // Check if plant should be watered
-    analogWrite(WATER_PUMP_PIN, 255); // Giving 5V on base of pnp transistor
-  } else {
-    analogWrite(WATER_PUMP_PIN, 0); // 0V on base, transistor conducts
-  }
+float temp = dht11.readTemperature();
+float hum = dht11.readHumidity();
+float co2Read = analogRead(CO2_ANALOG_VALUE_PIN);
 
   if(buttonState){  // Check what should be displayed on LCD
-    tempLCD(10, 20);
+    tempLCD(temp, hum);
   } else{
-    co2LCD(222);
+    co2LCD(co2Read);
   }
-
   prevButtonState = buttonState;
-  waterState = co2Alarm;
-  //co2State = co2Alarm;
 
-
-/*
-  if(buttonState == LOW){
-    int temp = dht11.readTemperature();
-    int hum = dht11.readHumidity();
-    if(refresh != refreshed){
-      lcd.clear();
-      refreshed = refresh;
-    }
-    lcd.setCursor(0, 0);
-    lcd.print("Temp: " + String(temp));
-    lcd.setCursor(0, 1);
-    lcd.print("Humidity: " + String(hum) + "%  ");
-  }else {
-    float CO2_read = analogRead(A1);
-    
-    alarm((bool)CO2_read);
-  if(refresh != refreshed){
-    lcd.clear();
-    refreshed = refresh;
-  }
-    lcd.setCursor(0, 0);
-    lcd.print("CO2: " + String(CO2_read));
-  if(CO2_read > 1000){
-    lcd.setCursor(0, 1);
-    lcd.print("Extremly High!  ");
-  } else if (CO2_read > 500){
-      lcd.setCursor(0, 1);          // move cursor to   (0, 1)
-      lcd.print("High CO2        "); // print message at (0, 1)
-  } else {
-      lcd.setCursor(0, 1);          // move cursor to   (0, 1)
-      lcd.print("Good CO2        "); // print message at (0, 1)
-    }
-  //delay(5000);
-  }
-*/
+  waterState = digitalRead(SOIL_SENSOR_PIN);
+  Serial.print(waterState);
+  watering(waterState);
 }
 
 // Functions
@@ -151,24 +81,20 @@ float co2PpmConversion(float co2Value){
   //???
 }
 
-int poprzednia_wartoscTemp = 0;
-void tempLCD(int temperature, int humidity){
+void tempLCD(float temperature, float humidity){
 
-  if (temperature != poprzednia_wartoscTemp) {
+  if (temperature != pevTempVal) {
     lcd.clear();
-   lcd.setCursor(0, 0);
-   lcd.print("Temp: " + String(temperature));
-   lcd.setCursor(0, 1);
-   lcd.print("Humidity: " + String(humidity) + "%  ");
-  poprzednia_wartoscTemp = temperature;
+    lcd.setCursor(0, 0);
+    lcd.print("Temp: " + String(temperature));
+    lcd.setCursor(0, 1);
+    lcd.print("Humidity: " + String(humidity) + "%  ");
+    pevTempVal = temperature;
+  }
 }
 
-
-}
-
-int poprzednia_wartoscCo2 = 0;
 void co2LCD(float co2Concentration){
-  if (co2Concentration != poprzednia_wartoscCo2){
+  if (co2Concentration != prevCo2Val){
   lcd.clear();
   lcd.setCursor(0, 0);
   lcd.print("CO2: " + String(co2Concentration) + "ppm");
@@ -183,60 +109,29 @@ void co2LCD(float co2Concentration){
       lcd.setCursor(0, 1);          // move cursor to   (0, 1)
       lcd.print("Good CO2        "); // print message at (0, 1)
     }
-    poprzednia_wartoscCo2 = co2Concentration;
-}
-}
-
-/*
-void myISR() {
-  static bool switching_pending = false;
-  static long int elapse_timer;
-  int button_reading = digitalRead(INTERRUPT_BUTTON_PIN);
-
-  if(button_reading == HIGH){
-    switching_pending = true;
-    elapse_timer  = millis();
-  }
-  if(switching_pending && button_reading == LOW){
-    if(millis() - elapse_timer > DEBOUNCER){
-      switching_pending = false;
-      buttonState = !buttonState;
-      refreshed = !refresh;
-    }
+    prevCo2Val = co2Concentration;
   }
 }
-*/
+
+void watering(bool waterState){
+  if(waterState){
+    analogWrite(WATER_PUMP_PIN, 0); // Giving 5V on base of pnp transistor, transistor closed
+  } else {
+    analogWrite(WATER_PUMP_PIN, 255); // 0V on base, transistor conducts
+  }
+}
 
 // ISR functions
-
-void soilISR(){
-  //if(waterState == watering){
-  watering = !watering;
-  waterState = 0;
-  //}
+void co2ISR(){
+  co2Alarm = !co2Alarm;
 }
 
-void soil2ISR(){
-  //if(waterState == watering){
-  watering = !watering;
-  //}
-}
-
-  void buttonISR(){
-      unsigned long currentTime = millis();
+void buttonISR(){
+  unsigned long currentTime = millis();
   if (currentTime - lastDebounceTime > debounceDelay) {
     buttonState = !buttonState;
     lastDebounceTime = currentTime;
-    poprzednia_wartoscTemp = 0;
-    poprzednia_wartoscCo2 = 0;
+    pevTempVal = 0;
+    prevCo2Val = 0;
   }
-    //if(prevButtonState == buttonState){
-    //buttonState = !buttonState;
-    //}
-  }
-
-  ISR(PCINT0_vect) {
-    //if(co2State == co2Alarm){
-    co2Alarm = !co2Alarm;
-    //}
 }
